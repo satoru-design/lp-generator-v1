@@ -14,11 +14,13 @@ export default function LPGeneratorApp() {
     productName: '',
     price: '',
     usp: '',
-    features: ''
+    features: '',
+    targetGender: '',
+    targetAge: ''
   });
   const [content, setContent] = useState<any>(null);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
@@ -32,41 +34,91 @@ export default function LPGeneratorApp() {
     setStep('loading');
     
     const systemPrompt = `
-あなたは「売れるLP」の専門家です。以下の商材データを受け取り、成約率を最大化する構成をJSONで出力してください。
+あなたは超一流の物販マーケターです。以下の商品情報を受け取り、コンバージョン率を最大化させるためのLPドラフトを作成してください。
 
-【制約事項】
-- PASONAの法則（Problem, Affinity, Solution, Offer, Narrowing, Action）を意識すること。
-- 日本語で出力すること。
-- 出力は純粋なJSONのみ。（Markdown表記などで囲わないこと）
+# 構成ルール
+「PASONAの法則」に基づき、読者が「自分のための商品だ」と確信し、最後には「買わない理由がない」と思わせる論理構成にしてください。
 
-【期待する出力JSONの構造】
+# 執筆トーン
+- 信頼感がありつつも、親身になって悩みに寄り添うトーン。
+- 専門用語は避け、中学生でもベネフィットが理解できる平易かつ力強い言葉を使ってください。
+
+# 出力項目（JSON形式）
+以下の構造を持つJSONを出力してください。Markdown表記などで囲わないでください。
+
 {
-  "hero": { "title": "...", "sub": "...", "cta": "..." },
-  "painPoints": [{ "title": "...", "text": "..." }],
-  "solution": { "title": "...", "text": "..." },
-  "proof": [{ "title": "...", "text": "..." }],
-  "closing": { "price": "...", "benefit": "...", "cta": "..." }
+  "hero": {
+    "catchcopies": ["...", "...", "..."], // 強烈なキャッチコピー（ヘッドライン）3選
+    "title": "...", // 選択したキャッチコピーの1つ
+    "sub": "...",
+    "cta": "..."
+  },
+  "painPoints": [
+    { "title": "...", "text": "..." } // 読者の悩みを代弁する共感セクション
+  ],
+  "solution": {
+    "title": "...", // 商品が提供する究極のベネフィット（機能ではなく未来の状態）
+    "text": "..."
+  },
+  "proof": [
+    { "title": "...", "text": "..." } // 信頼を裏付けるエビデンスの配置案
+  ],
+  "closing": {
+    "price": "...",
+    "benefit": "...", // 今すぐ購入すべき理由（オファー・限定性）
+    "cta": "..."
+  }
 }
     `;
 
+    const imagePrompt = `${formData.industry}業界の商材「${formData.productName}」の魅力を伝える高品質の広告用ヒーロー画像。フォトリアル、クリーンでモダンなデザイン、明るい雰囲気、ユーザーの目を惹きつける構図。`;
+
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GENERATION_MODEL}:generateContent?key=${config.apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ parts: [{ text: JSON.stringify(formData) }] }],
-          generationConfig: { responseMimeType: "application/json" }
+      const [textResponse, imageResponse] = await Promise.all([
+        fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GENERATION_MODEL}:generateContent?key=${config.apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ parts: [{ text: JSON.stringify(formData) }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          })
+        }),
+        fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent?key=${config.apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: imagePrompt }] }]
+          })
+        }).catch(e => {
+          console.error("Image API Error:", e);
+          return null;
         })
-      });
+      ]);
       
-      if (!response.ok) {
-        throw new Error(`API Error: ${response.status}`);
+      if (!textResponse.ok) {
+        throw new Error(`API Error: ${textResponse.status}`);
       }
       
-      const result = await response.json();
-      const generatedText = result.candidates[0].content.parts[0].text;
-      setContent(JSON.parse(generatedText));
+      const textResult = await textResponse.json();
+      const generatedText = textResult.candidates[0].content.parts[0].text;
+      const parsedContent = JSON.parse(generatedText);
+
+      if (imageResponse && imageResponse.ok) {
+        try {
+          const imgResult = await imageResponse.json();
+          const part = imgResult.candidates?.[0]?.content?.parts?.[0];
+          if (part?.inlineData) {
+             parsedContent.heroImage = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+          } else if (part?.text && part.text.startsWith('http')) {
+             parsedContent.heroImage = part.text;
+          }
+        } catch (e) {
+          console.error("Failed to parse image result:", e);
+        }
+      }
+
+      setContent(parsedContent);
       setStep('preview');
     } catch (error: any) {
       alert("生成に失敗しました: " + error.message);
@@ -139,6 +191,27 @@ export default function LPGeneratorApp() {
                   </div>
                 </div>
 
+                <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">ターゲット（性別）</label>
+                    <select required name="targetGender" value={formData.targetGender} onChange={handleInputChange} className="w-full rounded-xl border-slate-200 bg-slate-50 border px-4 py-3 text-slate-900 focus:border-indigo-500 focus:bg-white focus:ring-1 focus:ring-indigo-500 transition-all outline-none appearance-none">
+                      <option value="" disabled>選択してください</option>
+                      <option value="男女">男女</option>
+                      <option value="男性">男性</option>
+                      <option value="女性">女性</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">ターゲット（年齢）</label>
+                    <select required name="targetAge" value={formData.targetAge} onChange={handleInputChange} className="w-full rounded-xl border-slate-200 bg-slate-50 border px-4 py-3 text-slate-900 focus:border-indigo-500 focus:bg-white focus:ring-1 focus:ring-indigo-500 transition-all outline-none appearance-none">
+                      <option value="" disabled>選択してください</option>
+                      {Array.from({ length: 13 }, (_, i) => 20 + i * 5).map(age => (
+                        <option key={age} value={`${age}代`}>{age}代</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">商材名</label>
                   <input required type="text" name="productName" placeholder="商品やサービスの名称" value={formData.productName} onChange={handleInputChange} className="w-full rounded-xl border-slate-200 bg-slate-50 border px-4 py-3 text-slate-900 focus:border-indigo-500 focus:bg-white focus:ring-1 focus:ring-indigo-500 transition-all outline-none" />
@@ -188,22 +261,45 @@ export default function LPGeneratorApp() {
         {step === 'preview' && content && (
           <div className="space-y-12 pb-20 animate-in fade-in slide-in-from-bottom-8 duration-700">
             {/* HERO SECTION */}
-            <section className="relative rounded-3xl overflow-hidden bg-gradient-to-br from-slate-900 to-slate-800 text-white px-8 py-20 sm:px-16 sm:py-32 text-center shadow-2xl">
-              <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10 mix-blend-overlay"></div>
-              <div className="relative z-10 max-w-4xl mx-auto space-y-8">
-                <span className="inline-block px-4 py-1.5 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold text-sm tracking-wider uppercase border border-indigo-400/30">
-                  {content.hero.sub}
-                </span>
-                <h1 className="text-4xl sm:text-6xl font-extrabold tracking-tight leading-tight">
-                  {content.hero.title}
-                </h1>
-                <div className="pt-8">
-                  <button className="bg-gradient-to-r from-indigo-500 to-purple-500 text-white font-bold text-lg px-10 py-5 rounded-full shadow-xl shadow-indigo-500/30 hover:scale-105 transition-transform duration-300 flex items-center mx-auto">
-                    {content.hero.cta}
-                    <ChevronRight className="ml-2 w-6 h-6" />
-                  </button>
+            <section className="relative rounded-3xl overflow-hidden bg-gradient-to-br from-slate-900 to-slate-800 text-white shadow-2xl flex flex-col md:flex-row items-stretch min-h-[500px]">
+              <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10 mix-blend-overlay border-none"></div>
+              
+              <div className="relative z-10 p-8 sm:p-16 flex-1 flex flex-col justify-center text-center md:text-left">
+                <div className="space-y-8 max-w-2xl mx-auto md:mx-0">
+                  <span className="inline-block px-4 py-1.5 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold text-sm tracking-wider uppercase border border-indigo-400/30 mb-4">
+                    {content.hero.sub}
+                  </span>
+                  
+                  {content.hero.catchcopies && content.hero.catchcopies.length > 0 && (
+                    <div className="mb-6">
+                      <p className="text-sm text-indigo-200 mb-2 font-semibold">【提案ヘッドライン 3選】</p>
+                      <ul className="text-left space-y-2 mb-6 text-slate-100/90 text-sm md:text-base border-l-4 border-indigo-500 pl-4">
+                        {content.hero.catchcopies.map((copy: string, idx: number) => (
+                          <li key={idx}>・{copy}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <h1 className="text-4xl sm:text-5xl lg:text-5xl font-extrabold tracking-tight leading-tight">
+                    {content.hero.title}
+                  </h1>
+                  <div className="pt-8">
+                    <button className="bg-gradient-to-r from-indigo-500 to-purple-500 text-white font-bold text-lg px-10 py-5 rounded-full shadow-xl shadow-indigo-500/30 hover:scale-105 transition-transform duration-300 flex items-center mx-auto md:mx-0">
+                      {content.hero.cta}
+                      <ChevronRight className="ml-2 w-6 h-6" />
+                    </button>
+                  </div>
                 </div>
               </div>
+
+              {content.heroImage && (
+                <div className="relative z-10 w-full md:w-[45%] lg:w-1/2 min-h-[300px] md:min-h-full bg-slate-800/50">
+                   {/* Gradient overlay to seamlessly merge text area and image */}
+                   <div className="absolute inset-0 bg-gradient-to-t md:bg-gradient-to-r from-slate-900 via-slate-900/40 to-transparent z-10 pointer-events-none"></div>
+                   <img src={content.heroImage} alt={content.hero.title} className="absolute inset-0 w-full h-full object-cover" />
+                </div>
+              )}
             </section>
 
             {/* PROBLEM & AFFINITY SECTION */}
