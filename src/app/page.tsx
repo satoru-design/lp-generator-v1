@@ -5,6 +5,26 @@ import { Rocket, Send, Eye, Settings, Loader2, Sparkles, CheckCircle, ChevronRig
 
 const GENERATION_MODEL = "gemini-3.1-pro-preview";
 
+const ALLOWED_IMAGE_MIME = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+// モデルの応答は信頼できない入力として扱う。img の src に渡す前に、
+// 既知の画像 MIME の data URI か https の URL だけに絞り込む。
+const sanitizeImageSrc = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const src = value.trim();
+
+  const dataUri = /^data:([a-z]+\/[a-z0-9.+-]+);base64,[A-Za-z0-9+/=]+$/i.exec(src);
+  if (dataUri) {
+    return ALLOWED_IMAGE_MIME.includes(dataUri[1].toLowerCase()) ? src : null;
+  }
+
+  try {
+    return new URL(src).protocol === 'https:' ? src : null;
+  } catch {
+    return null;
+  }
+};
+
 export default function LPGeneratorApp() {
   const [step, setStep] = useState<'input' | 'loading' | 'preview'>('input');
   const [config, setConfig] = useState({ apiKey: '' });
@@ -75,25 +95,22 @@ export default function LPGeneratorApp() {
 
     try {
       const [textResponse, imageResponse] = await Promise.all([
-        fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GENERATION_MODEL}:generateContent?key=${config.apiKey}`, {
+        fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GENERATION_MODEL}:generateContent`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.apiKey },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt }] },
             contents: [{ parts: [{ text: JSON.stringify(formData) }] }],
             generationConfig: { responseMimeType: "application/json" }
           })
         }),
-        fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent?key=${config.apiKey}`, {
+        fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.apiKey },
           body: JSON.stringify({
             contents: [{ parts: [{ text: imagePrompt }] }]
           })
-        }).catch(e => {
-          console.error("Image API Error:", e);
-          return null;
-        })
+        }).catch(() => null)
       ]);
       
       if (!textResponse.ok) {
@@ -108,20 +125,25 @@ export default function LPGeneratorApp() {
         try {
           const imgResult = await imageResponse.json();
           const part = imgResult.candidates?.[0]?.content?.parts?.[0];
-          if (part?.inlineData) {
-             parsedContent.heroImage = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-          } else if (part?.text && part.text.startsWith('http')) {
-             parsedContent.heroImage = part.text;
+          const candidateSrc = part?.inlineData
+            ? `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`
+            : part?.text;
+          const safeSrc = sanitizeImageSrc(candidateSrc);
+          if (safeSrc) {
+             parsedContent.heroImage = safeSrc;
           }
-        } catch (e) {
-          console.error("Failed to parse image result:", e);
+        } catch {
+          // 画像は任意要素。失敗しても本文の生成結果は表示する。
         }
       }
 
       setContent(parsedContent);
       setStep('preview');
-    } catch (error: any) {
-      alert("生成に失敗しました: " + error.message);
+    } catch (error: unknown) {
+      // 例外メッセージをそのまま画面に出さない。リクエスト URL や
+      // 外部 API 側の内部情報が混ざる場合があるため。
+      console.error("LP generation failed:", error);
+      alert("生成に失敗しました。入力内容と API キーを確認して、もう一度お試しください。");
       setStep('input');
     }
   };
@@ -144,9 +166,11 @@ export default function LPGeneratorApp() {
           {step === 'input' && (
             <div className="flex items-center bg-white rounded-full border border-slate-200 pl-4 pr-1 py-1 shadow-sm text-sm">
               <Settings size={16} className="text-slate-400 mr-2" />
-              <input 
-                type="password" 
-                placeholder="Gemini API Key..." 
+              <input
+                type="password"
+                placeholder="Gemini API Key..."
+                autoComplete="off"
+                spellCheck={false}
                 className="outline-none bg-transparent w-48 text-slate-600 placeholder:text-slate-400"
                 value={config.apiKey}
                 onChange={(e) => setConfig({ ...config, apiKey: e.target.value })}
